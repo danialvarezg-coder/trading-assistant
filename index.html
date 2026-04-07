@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Scanner · FxPro cTrader</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Bebas+Neue&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0a; font-family: 'IBM Plex Mono', monospace; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #111; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+      40% { transform: translateY(-6px); opacity: 1; }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    textarea { resize: none; font-family: 'IBM Plex Mono', monospace; }
+    textarea:focus { outline: none; }
+    button:focus { outline: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"];
+
+    const SYSTEM_PROMPT = `Eres un asistente experto en day trading y análisis técnico forex. Tu especialidad es analizar oportunidades de trading basándote en el setup específico de la trader, que opera con el broker FxPro.
+
+SETUP DE LA TRADER:
+- Indicadores: EMA 8, EMA 21, EMA 50
+- Fibonacci retracements (niveles clave: 0.236, 0.382, 0.5, 0.618, 0.786)
+- Niveles de Soporte y Resistencia (S/R)
+- Pares seguidos: EUR/USD, GBP/USD, USD/JPY, XAU/USD
+- Timeframes: H1 para contexto, M5 para entrada
+
+BROKER: FXPRO cTrader (ECN) — información crítica a tener en cuenta:
+- La trader usa cTrader con modelo ECN: spread variable RAW + comisión por lote. Mucho mejor que MT4 para scalping.
+- Comisión FxPro cTrader: ~3.5$/lote por lado = 7$/lote ida y vuelta ≈ 0.7 pips equivalentes en EUR/USD.
+- EUR/USD: spread RAW ~0.1-0.4 pips en sesión activa + comisión. Coste total real ~0.8-1.1 pips. Aceptable para scalping.
+- GBP/USD: spread ~0.3-0.6 pips en sesión Londres + comisión. Buena opción entre las 8:00-17:00 UK.
+- USD/JPY: spread ~0.1-0.3 pips + comisión. Uno de los más baratos. Excelente para scalping.
+- XAU/USD (Oro): spread ~0.2-0.5 $/oz + comisión. Los movimientos amplios del oro (10-30 pips fácilmente) compensan muy bien los costes.
+- VENTAJA cTrader: ejecución ECN directa, sin re-quotes, ideal para entradas precisas en M5.
+- IMPORTANTE: Los spreads se amplían fuera de sesión Londres (07:00-16:00 CET) y NY (14:00-23:00 CET). Evitar entradas en noticias de alto impacto (NFP, CPI, decisiones Fed).
+- TP mínimo recomendado para cubrir costes + RR decente: mínimo 8-10 pips en majors, 15-20 pips en XAU/USD.
+- Considera siempre el coste total real (spread + comisión) al calcular el RR neto en cada recomendación.
+
+CUANDO ANALICES, SIEMPRE:
+1. Busca datos de precio actual y reciente de los pares mencionados
+2. Evalúa la alineación de EMAs (tendencia)
+3. Identifica niveles S/R clave cercanos
+4. Señala zonas de Fibonacci relevantes
+5. Considera el spread de FxPro al evaluar cada par
+6. Da una recomendación CLARA de cuál par tiene la mejor oportunidad neta
+7. Indica: par recomendado, dirección (LONG/SHORT), zona de entrada, stop loss sugerido y target
+
+FORMATO DE RESPUESTA:
+- Empieza con un resumen rápido del mercado general
+- Analiza cada par brevemente
+- Termina con tu recomendación destacada en formato:
+  🏆 PAR RECOMENDADO: [par] | [LONG/SHORT] | Entrada: [zona] | SL: [nivel] | TP: [nivel] | RR real c/spread: [X:X]
+- Sé directo y profesional, como un analista senior
+
+Si la trader comparte observaciones propias, incorpóralas al análisis y dales peso importante.
+Responde siempre en español.`;
+
+    const formatTime = () => {
+      const now = new Date();
+      return now.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    };
+
+    const TypingDots = () => (
+      <div style={{ display: "flex", gap: "4px", alignItems: "center", padding: "4px 0" }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{
+            width: 7, height: 7, borderRadius: "50%", background: "#d4a843",
+            animation: "bounce 1.2s infinite", animationDelay: `${i * 0.2}s`,
+          }} />
+        ))}
+      </div>
+    );
+
+    const PairBadge = ({ pair, active, onClick }) => (
+      <button onClick={() => onClick(pair)} style={{
+        padding: "5px 12px", borderRadius: 4,
+        border: active ? "1px solid #d4a843" : "1px solid #2a2a2a",
+        background: active ? "rgba(212,168,67,0.12)" : "transparent",
+        color: active ? "#d4a843" : "#666",
+        fontSize: 11, fontFamily: "'IBM Plex Mono', monospace",
+        cursor: "pointer", transition: "all 0.2s", letterSpacing: "0.05em",
+      }}>
+        {pair}
+      </button>
+    );
+
+    function TradingAssistant() {
+      const [messages, setMessages] = useState([{
+        role: "assistant",
+        content: "Buenos días, trader. Estoy listo para analizar el mercado con tu setup de EMA 8/21/50 + Fibonacci + S/R.\n\nPuedes preguntarme directamente ¿Cuál es la mejor oportunidad ahora? o seleccionar un par específico. También puedes compartir tus observaciones propias y las incorporo al análisis.",
+        time: formatTime(),
+      }]);
+      const [input, setInput] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [activePairs, setActivePairs] = useState([]);
+      const [history, setHistory] = useState([]);
+      const bottomRef = useRef(null);
+
+      useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, [messages, loading]);
+
+      const togglePair = (pair) => {
+        setActivePairs((prev) =>
+          prev.includes(pair) ? prev.filter((p) => p !== pair) : [...prev, pair]
+        );
+      };
+
+      const buildUserMessage = () => {
+        let msg = input.trim();
+        if (activePairs.length > 0) msg = `Pares de interés: ${activePairs.join(", ")}. ${msg}`;
+        if (!msg) {
+          msg = activePairs.length > 0
+            ? `Analiza ${activePairs.join(", ")} con mi setup y dime cuál tiene la mejor oportunidad ahora mismo.`
+            : "¿Cuál es la mejor oportunidad de trading ahora mismo entre EUR/USD, GBP/USD, USD/JPY y XAU/USD con mi setup?";
+        }
+        return msg;
+      };
+
+      const sendMessage = async () => {
+        const userText = buildUserMessage();
+        const userMsg = { role: "user", content: userText, time: formatTime() };
+        const newHistory = [...history, { role: "user", content: userText }];
+
+        setMessages((prev) => [...prev, userMsg]);
+        setInput("");
+        setActivePairs([]);
+        setLoading(true);
+
+        try {
+          const response = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1000,
+              system: SYSTEM_PROMPT,
+              tools: [{ type: "web_search_20250305", name: "web_search" }],
+              messages: newHistory,
+            }),
+          });
+
+          const data = await response.json();
+          let finalContent = "";
+          let allMessages = [...newHistory];
+
+          if (data.stop_reason === "tool_use") {
+            allMessages.push({ role: "assistant", content: data.content });
+            const toolResults = data.content
+              .filter((b) => b.type === "tool_use")
+              .map((b) => ({ type: "tool_result", tool_use_id: b.id, content: "Buscando datos de mercado..." }));
+            allMessages.push({ role: "user", content: toolResults });
+
+            const response2 = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "claude-sonnet-4-20250514",
+                max_tokens: 1000,
+                system: SYSTEM_PROMPT,
+                tools: [{ type: "web_search_20250305", name: "web_search" }],
+                messages: allMessages,
+              }),
+            });
+
+            const data2 = await response2.json();
+            finalContent = data2.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+            allMessages.push({ role: "assistant", content: data2.content });
+          } else {
+            finalContent = data.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+            allMessages.push({ role: "assistant", content: data.content });
+          }
+
+          const simplifiedHistory = allMessages
+            .filter((m) => !(m.role === "user" && Array.isArray(m.content) && m.content[0]?.type === "tool_result"))
+            .map((m) => ({
+              role: m.role,
+              content: Array.isArray(m.content)
+                ? m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")
+                : m.content,
+            }))
+            .filter((m) => m.content);
+
+          setHistory(simplifiedHistory);
+          setMessages((prev) => [...prev, {
+            role: "assistant",
+            content: finalContent || "No pude obtener datos en este momento. Intenta de nuevo.",
+            time: formatTime(),
+          }]);
+        } catch (err) {
+          setMessages((prev) => [...prev, {
+            role: "assistant",
+            content: "Error de conexión. Verifica tu red e intenta de nuevo.",
+            time: formatTime(),
+          }]);
+        }
+
+        setLoading(false);
+      };
+
+      const handleKey = (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+      };
+
+      const renderMessage = (content) => {
+        return content.split("\n").map((line, i) => {
+          const isHighlight = line.includes("🏆");
+          return (
+            <div key={i} style={{
+              marginBottom: isHighlight ? 6 : 2,
+              padding: isHighlight ? "8px 12px" : 0,
+              background: isHighlight ? "rgba(212,168,67,0.1)" : "transparent",
+              borderLeft: isHighlight ? "2px solid #d4a843" : "none",
+              borderRadius: isHighlight ? 4 : 0,
+              color: isHighlight ? "#d4a843" : "#c8c8c8",
+              fontWeight: isHighlight ? 600 : 400,
+              fontSize: 13,
+            }}>
+              {line.replace(/\*\*/g, "").replace(/^\*/g, "•") || "\u00a0"}
+            </div>
+          );
+        });
+      };
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#0a0a0a", display: "flex", flexDirection: "column", alignItems: "center" }}>
+
+          {/* Header */}
+          <div style={{ width: "100%", maxWidth: 760, padding: "20px 24px 0", borderBottom: "1px solid #1a1a1a" }}>
+            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 16 }}>
+              <div>
+                <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, color: "#d4a843", letterSpacing: "0.1em" }}>
+                  MARKET SCANNER
+                </div>
+                <div style={{ fontSize: 10, color: "#444", letterSpacing: "0.15em", marginTop: -2 }}>
+                  EMA 8/21/50 · FIBONACCI · S/R LEVELS · FXPRO cTRADER
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#2ecc71", boxShadow: "0 0 8px #2ecc71" }} />
+                <span style={{ fontSize: 10, color: "#444", letterSpacing: "0.1em" }}>LIVE</span>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, paddingBottom: 16, flexWrap: "wrap" }}>
+              {PAIRS.map((p) => (
+                <PairBadge key={p} pair={p} active={activePairs.includes(p)} onClick={togglePair} />
+              ))}
+              <div style={{ marginLeft: "auto", fontSize: 10, color: "#333", alignSelf: "center" }}>
+                selecciona par(es) o escribe
+              </div>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div style={{
+            width: "100%", maxWidth: 760, flex: 1, overflowY: "auto",
+            padding: "20px 24px", display: "flex", flexDirection: "column", gap: 20,
+            minHeight: "calc(100vh - 210px)", maxHeight: "calc(100vh - 210px)",
+          }}>
+            {messages.map((msg, i) => (
+              <div key={i} style={{
+                display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row",
+                gap: 12, animation: "fadeIn 0.3s ease",
+              }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: msg.role === "assistant" ? 4 : "50%",
+                  background: msg.role === "assistant" ? "rgba(212,168,67,0.15)" : "#1a1a1a",
+                  border: msg.role === "assistant" ? "1px solid rgba(212,168,67,0.3)" : "1px solid #2a2a2a",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 11, flexShrink: 0, marginTop: 2,
+                }}>
+                  {msg.role === "assistant" ? "📊" : "👤"}
+                </div>
+                <div style={{ maxWidth: "78%" }}>
+                  <div style={{
+                    background: msg.role === "assistant" ? "#111" : "#161616",
+                    border: `1px solid ${msg.role === "assistant" ? "#1e1e1e" : "#222"}`,
+                    borderRadius: msg.role === "assistant" ? "0 8px 8px 8px" : "8px 0 8px 8px",
+                    padding: "12px 16px", lineHeight: 1.7,
+                  }}>
+                    {renderMessage(msg.content)}
+                  </div>
+                  <div style={{ fontSize: 9, color: "#333", marginTop: 4, textAlign: msg.role === "user" ? "right" : "left", letterSpacing: "0.05em" }}>
+                    {msg.time}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {loading && (
+              <div style={{ display: "flex", gap: 12, animation: "fadeIn 0.3s ease" }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: 4,
+                  background: "rgba(212,168,67,0.15)", border: "1px solid rgba(212,168,67,0.3)",
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
+                }}>📊</div>
+                <div style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: "0 8px 8px 8px", padding: "12px 16px" }}>
+                  <div style={{ fontSize: 10, color: "#444", marginBottom: 6, letterSpacing: "0.1em" }}>ESCANEANDO MERCADO...</div>
+                  <TypingDots />
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div style={{ width: "100%", maxWidth: 760, padding: "16px 24px 24px", borderTop: "1px solid #1a1a1a", background: "#0a0a0a" }}>
+            {activePairs.length > 0 && (
+              <div style={{ fontSize: 10, color: "#d4a843", marginBottom: 8, letterSpacing: "0.05em" }}>
+                Analizando: {activePairs.join(" · ")}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKey}
+                placeholder={activePairs.length > 0 ? "Añade observaciones o pulsa Analizar..." : "¿Cuál tiene la mejor oportunidad ahora? / Comparte tus observaciones..."}
+                rows={2}
+                style={{
+                  flex: 1, background: "#111", border: "1px solid #222",
+                  borderRadius: 6, padding: "10px 14px", color: "#c8c8c8",
+                  fontSize: 12, lineHeight: 1.6,
+                }}
+              />
+              <button
+                onClick={sendMessage}
+                disabled={loading}
+                style={{
+                  background: loading ? "#1a1a1a" : "#d4a843",
+                  color: loading ? "#444" : "#0a0a0a",
+                  border: "none", borderRadius: 6, padding: "10px 18px",
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600,
+                  letterSpacing: "0.08em", cursor: loading ? "not-allowed" : "pointer",
+                  transition: "all 0.2s", whiteSpace: "nowrap", height: 58,
+                }}
+              >
+                {loading ? "..." : "ANALIZAR →"}
+              </button>
+            </div>
+            <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 8, letterSpacing: "0.05em" }}>
+              ENTER para enviar · Selecciona pares arriba para filtrar el análisis
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<TradingAssistant />);
+  </script>
+</body>
+</html>
